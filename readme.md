@@ -6,6 +6,46 @@
    conda activate fastgres
     ```
 
+## Training Guide
+
+1. Label your workload queries:
+   ```bash
+   python3  generate_labels.py <path/to/queries/> -o <output/dir/save_name.json> -db imdb
+   ```
+
+2. Build the necessary database knowledge:
+   ```bash
+   python3 update_db_info.py imdb -mm db_info/imdb/ -l db_info/imdb/ -w db_info/imdb/ -q <path/to/all/queries/>
+   ```
+
+3. Build query objects:
+   ```bash
+   python3 build_query_objects.py <path/to/all/queries/> -sp <path/to/save/dir/>
+   ```
+
+4. Configure the model checkpoint path in `evaluate_queries.py` (line 413):
+   ```python
+   freeze_dir = "/your/path/here"  # Update this path to where you wish for the checkpoints to be saved
+   ```
+
+5. Evaluate the queries:
+   ```bash
+   python3 evaluate_queries.py <path/to/all/queries/> -db imdb -a <path/to/archive.json> -dbip <path/to/db_info/> -qo <path/to/query_objects.pkl> -cqd False -sd <dir/to/save/to/> -sp <path/to/train_test_split.json>
+   ```
+
+## Testing guide
+
+1. Configure the model checkpoint path in `test_fastgres.py` (line 183):
+   ```python
+   MODEL_DIR = "/your/path/here"  # Update this path to load your checkpoint
+   ```
+
+2. Run the testing script:
+   ```bash
+   python3 test_fastgres.py \
+       /path/to/workload/experiment1/job/run1/ \
+   ```
+
 ---
 
 # FASTgres
