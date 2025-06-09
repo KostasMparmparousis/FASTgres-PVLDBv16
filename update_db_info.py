@@ -35,7 +35,11 @@ def get_sample_cardinalities(db_string: str, table: str, column: str, samples: s
 
 def get_wildcard_cardinality(db_string: str, table: str, column: str, operator: str, filter_attribute: str):
     conn, cursor = u.establish_connection(db_string)
-    cursor.execute("SELECT COUNT(%s) FROM %s where %s %s %s",
+    if operator == "eq":
+        cursor.execute("SELECT COUNT(%s) FROM %s where %s = %s",
+                       (AsIs(column), AsIs(table), AsIs(column), filter_attribute))
+    else:
+        cursor.execute("SELECT COUNT(%s) FROM %s where %s %s %s",
                    (AsIs(column), AsIs(table), AsIs(column), AsIs(operator), filter_attribute))
     return cursor.fetchall()[0][0]
 
@@ -117,6 +121,8 @@ if __name__ == "__main__":
         args_db_string = u.PG_STACK_OVERFLOW_REDUCED_10
     elif args_db_string == "tpch":
         args_db_string = u.PG_TPC_H
+    elif args_db_string == "tpcds":
+        args_db_string = u.PG_TPC_DS        
     args_mm = args.minmax
     args_label = args.label
     args_wildcard = args.wildcard

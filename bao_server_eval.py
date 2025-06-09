@@ -184,7 +184,9 @@ def run():
         args_db_string = u.PG_STACK_OVERFLOW_REDUCED_10
     elif args_db_string == "tpch":
         args_db_string = u.PG_TPC_H
-
+    elif args_db_string == "tpcds":
+        args_db_string = u.PG_TPC_DS
+        
     if output_path is None:
         raise ValueError('No output directory path provided')
     read_queries = get_query_content(u.get_queries(args_qp), args_qp)

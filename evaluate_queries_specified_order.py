@@ -408,11 +408,11 @@ def save_evaluation_artifacts(args_save_path, init_predictions, final_prediction
         with open(os.path.join(args_save_path, "performance_log.json"), "a") as f:
             json.dump({"total_latency": total_latency}, f)
 
-def freeze_evaluation(args_save_path, args_dict, model_artifacts):
-    """Create a frozen evaluation package that can be reused"""
-    freeze_dir = os.path.join("/data/hdd1/users/kmparmp/models/FASTgres/tpcds/frozen_evaluations", 
-                            f"frozen_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    os.makedirs(freeze_dir, exist_ok=True)
+def freeze_evaluation(args_save_path, args_dict, model_artifacts, query_path=None):
+    parent_dir = os.path.dirname(query_path)
+    model_dir = Path(parent_dir).parent 
+    model_dir = os.path.join(model_dir, "models/FASTgres/asc_latency/checkpoints")
+    os.makedirs(model_dir, exist_ok=True)
     
     # 1. Save all evaluation artifacts
     artifact_files = [
@@ -430,10 +430,10 @@ def freeze_evaluation(args_save_path, args_dict, model_artifacts):
     for file in artifact_files:
         src = os.path.join(args_save_path, file)
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(freeze_dir, file))
+            shutil.copy2(src, os.path.join(model_dir, file))
     
     # 2. Save the trained models
-    models_dir = os.path.join(freeze_dir, "models")
+    models_dir = os.path.join(model_dir, "context_models")
     os.makedirs(models_dir, exist_ok=True)
     for context in model_artifacts['context_models']:
         if not isinstance(model_artifacts['context_models'][context], int):
@@ -442,7 +442,7 @@ def freeze_evaluation(args_save_path, args_dict, model_artifacts):
                 pickle.dump(model_artifacts['context_models'][context], f)
     
     # 3. Save required input files
-    input_dir = os.path.join(freeze_dir, "inputs")
+    input_dir = os.path.join(model_dir, "inputs")
     os.makedirs(input_dir, exist_ok=True)
     
     # Archive
@@ -458,29 +458,25 @@ def freeze_evaluation(args_save_path, args_dict, model_artifacts):
     shutil.copy2(args_dict['query_objects_path'], 
                 os.path.join(input_dir, "query_objects.pkl"))
     
-    # Split file
-    shutil.copy2(args_dict['split_path'], 
-                os.path.join(input_dir, "train_test_split.json"))
-    
     # 4. Create reload script
     reload_script = f"""#!/bin/bash
 # Frozen evaluation reload script
 # Generated on {datetime.now().isoformat()}
 
 python3 evaluate_queries.py \\
-    "{os.path.join(freeze_dir, 'inputs')}" \\
+    "{os.path.join(model_dir, 'inputs')}" \\
     -db imdb \\
-    -a "{os.path.join(freeze_dir, 'inputs/archive.json')}" \\
-    -dbip "{os.path.join(freeze_dir, 'inputs')}" \\
-    -qo "{os.path.join(freeze_dir, 'inputs/query_objects.pkl')}" \\
+    -a "{os.path.join(model_dir, 'inputs/archive.json')}" \\
+    -dbip "{os.path.join(model_dir, 'inputs')}" \\
+    -qo "{os.path.join(model_dir, 'inputs/query_objects.pkl')}" \\
     -cqd {"True" if model_artifacts['final_predictions'] else "False"} \\
-    -sd "{freeze_dir}" \\
-    -sp "{os.path.join(freeze_dir, 'inputs/train_test_split.json')}"
+    -sd "{model_dir}" \\
+    -sp "{os.path.join(model_dir, 'inputs/train_test_split.json')}"
     """
     
-    with open(os.path.join(freeze_dir, "reload.sh"), 'w') as f:
+    with open(os.path.join(model_dir, "reload.sh"), 'w') as f:
         f.write(reload_script)
-    os.chmod(os.path.join(freeze_dir, "reload.sh"), 0o755)
+    os.chmod(os.path.join(model_dir, "reload.sh"), 0o755)
     
     # 5. Create metadata
     metadata = {
@@ -501,20 +497,28 @@ python3 evaluate_queries.py \\
         }
     }
     
-    with open(os.path.join(freeze_dir, "metadata.json"), 'w') as f:
+    with open(os.path.join(model_dir, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print(f"\nFrozen evaluation package created at: {freeze_dir}")
-    print(f"To reuse, run: {os.path.join(freeze_dir, 'reload.sh')}")
+    print(f"\nFrozen evaluation package created at: {model_dir}")
+    print(f"To reuse, run: {os.path.join(model_dir, 'reload.sh')}")
     
-    return freeze_dir
+    return model_dir
 
 def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_timeout, a_timeout, db_string,
-                      skipped_dict, use_context, args_test_queries: list, query_object_dict: dict,
+                      skipped_dict, use_context, query_object_dict: dict,
                       use_cqd: bool, estimators: int, estimator_depth: int, args_save_path: str, args: argparse.Namespace):
     # load queries
     start = time.time()
-    queries = u.get_queries(query_path)
+    forced_order = args.fileorder
+    if forced_order is not None:
+        with open(forced_order, 'r') as f:
+            queries = [line.strip() for line in f if line.strip()]
+        # optional: filter to only those that actually exist in the directory
+        available_queries = set(u.get_queries(query_path))
+        queries = [q for q in queries if q in available_queries]
+    else:
+        queries = u.get_queries(query_path)    
     # predetermine context
     context_queries = get_context_queries(queries, query_path, query_object_dict)
     # merge if needed
@@ -523,20 +527,17 @@ def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_t
     else:
         merged_contexts = {key: {key} for key in context_queries}
 
-    # split queries
-    train_queries, test_queries = get_query_split(queries, args_test_queries)
-
     # init context model dict and build db meta data
     context_models = dict()
     d_type_dict = u.build_db_type_dict(db_string)
 
     ###################################################################################################################
 
-    print("Training/Testing/All Queries: {} / {} / {}".format(len(train_queries), len(test_queries), len(queries)))
+    # print("Training/Testing/All Queries: {} / {} / {}".format(len(train_queries), len(test_queries), len(queries)))
     print("Training contexts")
     training_time = dict()
     for context in alive_it(context_queries):
-        context_models, train_time = train_context_model(context_queries, train_queries, context, context_models,
+        context_models, train_time = train_context_model(context_queries, queries, context, context_models,
                                                          query_object_dict, db_string, mm_dict, enc_dict, wc_dict,
                                                          skipped_dict, d_type_dict, archive, seed, a_timeout,
                                                          p_timeout, query_path, estimators, estimator_depth)
@@ -553,7 +554,7 @@ def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_t
     forward_pass_time = dict()
     total_latency=0
     unhandled_op, unhandled_type = [set() for _ in range(2)]
-    for query_name in alive_it(test_queries):
+    for query_name in alive_it(queries):
         init_predictions, forward_time, latency = test_query(query_name, merged_contexts, db_string, mm_dict, enc_dict, wc_dict,
                                                     unhandled_op, unhandled_type, skipped_dict, query_object_dict,
                                                     context_models, init_predictions, d_type_dict, use_cqd, query_path, args_save_path)
@@ -570,7 +571,7 @@ def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_t
             if not isinstance(model, int):
                 critical_queries[model.context] = list(sorted(model.critical_queries))
 
-        for query_name in alive_it(test_queries):
+        for query_name in alive_it(queries):
             # query_obj = Query(query_name, query_path)
             query_obj = query_object_dict[query_name]
             context = get_from_merged_context(query_obj, merged_contexts)
@@ -600,7 +601,6 @@ def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_t
         "archive_path": args.archive,  # Pass the original archive path
         "dbinfo_path": args.databaseinfopath,
         "query_objects_path": args.queryobjects,
-        "split_path": args.splitpath,
         "seed": seed,
         "database": db_string,
         "use_context": use_context,
@@ -629,7 +629,7 @@ def evaluate_workload(query_path, seed, archive, enc_dict, mm_dict, wc_dict, p_t
     )
     
     # Then create frozen package
-    freeze_dir = freeze_evaluation(args_save_path, args_dict, model_artifacts)
+    freeze_dir = freeze_evaluation(args_save_path, args_dict, model_artifacts, query_path)
     # # Save total latency to a file
     # with open(args_save_path + "total_latency.json", "w") as f:
     #     json.dump({"total_latency": total_latency}, f)
@@ -694,8 +694,6 @@ def main():
                                                                      "If provided, the standard split will be "
                                                                      "overwritten.")
     parser.add_argument("-qo", "--queryobjects", default=None, help="Path to query object .pkl to shorten eval.")
-    parser.add_argument("-sp", "--splitpath", default=None, help="Path to split to use (json, 'train', 'test'). "
-                                                                 "Overwrites bp.")
     parser.add_argument("-cqd", "--querydetection", default="True", help="Whether to use CQD or not. "
                                                                          "If False, -fp will be ignored. "
                                                                          "Default: True")
@@ -708,6 +706,8 @@ def main():
     parser.add_argument("-ed", "--estimatordepth", default=1000, help="Max depth of a single estimator. "
                                                                       "Defaults to 1000.")
     parser.add_argument("-r", "--restrict", default=False, help="Option to restrict the label space to certain hints.")
+    parser.add_argument("-fo", "--fileorder", default=None,
+                        help="Path to a .txt file containing query filenames (one per line) to enforce query evaluation order.")    
     args = parser.parse_args()
     query_path = args.queries
 
@@ -754,8 +754,15 @@ def main():
 
     args_query_objects_path = args.queryobjects
     if args_query_objects_path is None:
-        # raise ValueError("Query Objects -qo not provided")
-        args_query_objects = {query_name: Query(query_name, query_path) for query_name in u.get_queries(query_path)}
+        if args.fileorder is not None:
+            with open(args.fileorder, 'r') as f:
+                query_names = [line.strip() for line in f if line.strip()]
+            available_queries = set(u.get_queries(query_path))
+            query_names = [q for q in query_names if q in available_queries]
+        else:
+            query_names = u.get_queries(query_path)
+
+        args_query_objects = {query_name: Query(query_name, query_path) for query_name in query_names}
     else:
         args_query_objects = u.load_pickle(args_query_objects_path)
 
@@ -776,16 +783,6 @@ def main():
     args_a_timeout = float(args.absolutetimeout)
 
     args_bao_pred = args.baoprediction
-    args_split_path = args.splitpath
-    if args_bao_pred is not None and os.path.exists(args_bao_pred):
-        args_bao_test_queries = list(u.load_json(args_bao_pred).keys())
-        args_test_queries = args_bao_test_queries
-    elif args_split_path is not None and os.path.exists(args_split_path):
-        args_split_dict = u.load_json(args_split_path)
-        args_split_train, args_split_test = list(args_split_dict["train"]), list(args_split_dict["test"])
-        args_test_queries = args_split_test
-    else:
-        raise ValueError("Either a BAO prediction or a query split dictionary must be provided for comparison.")
 
     args_cqd = args.querydetection
     if args_cqd not in ["True", "False"]:
@@ -818,7 +815,7 @@ def main():
 
     evaluate_workload(query_path, args_seed, args_archive_restricted, args_label_encoders, args_mm_dict,
                             args_wildcard_dict, args_p_timeout, args_a_timeout, args_db, args_skipped_dict,
-                            args_use_context, args_test_queries, args_query_objects, args_cqd, args_estimators,
+                            args_use_context, args_query_objects, args_cqd, args_estimators,
                             args_estimator_depth, args_save_path, args)
 
     # u.save_json(init_predictions, args_save_path + "initial_predictions.json")

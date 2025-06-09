@@ -11,7 +11,6 @@ import utility as u
 from hint_sets import HintSet
 from tqdm import tqdm
 
-
 def get_combinations(to_switch_off: list):
     temp = {1: True, 0: False}
     bin_comb = list(itertools.product([0, 1], repeat=len(to_switch_off)))
@@ -68,10 +67,18 @@ def get_best_hint_set_static(path, query, conn_str, query_dict, reduced):
 
 
 def get_best_hint_set(path, query, conn_str, query_dict, reduced):
-    # standard timeout of 5 minutes should suffice as pg opt is at max 2.2 minutes on other evals
-    timeout = 300
-    best_hint = None
-
+    # First get the default PG execution time (hint set 63)
+    if 63 not in query_dict[query]:
+        default_time = u.evaluate_hinted_query(path, query, HintSet(63), conn_str, None)
+        query_dict[query][63] = default_time
+    else:
+        default_time = query_dict[query][63]
+    
+    # Set timeout as 1.5x default time (same as static approach)
+    timeout = 1.5 * default_time
+    best_hint = 63  # Initialize with default PG plan
+    best_hint_time = default_time
+    
     if reduced:
         to_switch_off = [32, 16, 8]
         iteration_list = list(sorted(get_combinations(to_switch_off)))
@@ -84,10 +91,9 @@ def get_best_hint_set(path, query, conn_str, query_dict, reduced):
         if hint_set_int in query_dict[query].keys():
             print('Found query entry')
             query_hint_time = query_dict[query][hint_set_int]
-            if timeout is None or query_hint_time < timeout:
-                timeout = query_hint_time
+            if query_hint_time < best_hint_time:
                 best_hint = hint_set_int
-            print('Found query but timed out')
+                best_hint_time = query_hint_time
             continue
         else:
             print('Evaluating Query')
@@ -105,9 +111,10 @@ def get_best_hint_set(path, query, conn_str, query_dict, reduced):
             query_dict[query] = hint_set_evaluations
 
             # update timeout
-            if timeout is None or query_hint_time < timeout:
-                timeout = query_hint_time
+            if query_hint_time < best_hint_time:
                 best_hint = hint_set_int
+                best_hint_time = query_hint_time
+                print(f"New best hint: {best_hint} with time {best_hint_time}")
 
         print('Adjusted Timeout with Query: {}, Hint Set: {}, Time: {}'
               .format(query, u.int_to_binary(hint_set_int), query_hint_time))
@@ -115,8 +122,18 @@ def get_best_hint_set(path, query, conn_str, query_dict, reduced):
     return query_dict
 
 
-def run(path, save, conn_str, strategy, query_dict,  static_timeout: bool, reduced: bool):
-    queries = u.get_queries(path)
+def run(path, save, conn_str, strategy, query_dict,  static_timeout: bool, reduced: bool, forced_order=None):
+    if forced_order is not None:
+        with open(forced_order, 'r') as f:
+            queries = [line.strip() for line in f if line.strip()]
+        # optional: filter to only those that actually exist in the directory
+        available_queries = set(u.get_queries(path))
+        queries = [q for q in queries if q in available_queries]
+    else:
+        queries = u.get_queries(path)
+        import random
+        random.shuffle(queries)
+
     for i in range(len(queries)):
         query = queries[i]
         try:
@@ -164,6 +181,8 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--complete", default=False, help="Builds result dictionary using a static timeout of "
                                                                 "1.5 times the pg default execution time.")
     parser.add_argument("-r", "--reduced", default=False, help="Info to use reduced hints")
+    parser.add_argument("-f", "--file_order", default=None,
+                        help="Path to a .txt file containing query filenames (one per line) to enforce execution order.")    
     args = parser.parse_args()
 
     query_path = args.queries
@@ -182,7 +201,9 @@ if __name__ == "__main__":
         args_db_string = u.PG_STACK_OVERFLOW_REDUCED_10
     elif args_db_string == "tpch":
         args_db_string = u.PG_TPC_H
-
+    elif args_db_string == "tpcds":
+        args_db_string = u.PG_TPC_DS
+        
     if query_path is None:
         raise argparse.ArgumentError(args.queries, "No query path provided")
 
@@ -201,7 +222,7 @@ if __name__ == "__main__":
         raise ValueError('Evaluation strategy not recognized')
 
     args_complete = args.complete
-    if args_complete not in ["True", "False"]:
+    if str(args_complete) not in ["True", "False"]:
         raise ValueError("Complete evaluation option only takes boolean values.")
     args_complete = True if args_complete == "True" else False
     arg_reduced = True if args.reduced == "True" else False
@@ -212,7 +233,7 @@ if __name__ == "__main__":
 
     connection_string = args_db_string
 
-    run(query_path, save_path, connection_string, evaluation_strategy, query_eval_dict, args_complete, arg_reduced)
+    run(query_path, save_path, connection_string, evaluation_strategy, query_eval_dict, args_complete, arg_reduced, args.file_order)
 
     print("Finished Label Generation")
 

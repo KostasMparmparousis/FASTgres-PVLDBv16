@@ -8,7 +8,7 @@ import os
 import pickle
 import pandas as pd
 import psycopg2 as pg
-
+from typing import Optional
 from tqdm import tqdm
 from hint_sets import HintSet, set_hints
 from typing import Optional as Opt
@@ -21,11 +21,12 @@ cfg.read("config.ini")
 
 dbs = cfg["DBConnections"]
 PG_IMDB = dbs["imdb"]
-PG_STACK_OVERFLOW = dbs["stack_overflow"]
-PG_STACK_OVERFLOW_REDUCED_16 = dbs["stack_overflow_reduced_16"]
-PG_STACK_OVERFLOW_REDUCED_13 = dbs["stack_overflow_reduced_13"]
-PG_STACK_OVERFLOW_REDUCED_10 = dbs["stack_overflow_reduced_10"]
+# PG_STACK_OVERFLOW = dbs["stack_overflow"]
+# PG_STACK_OVERFLOW_REDUCED_16 = dbs["stack_overflow_reduced_16"]
+# PG_STACK_OVERFLOW_REDUCED_13 = dbs["stack_overflow_reduced_13"]
+# PG_STACK_OVERFLOW_REDUCED_10 = dbs["stack_overflow_reduced_10"]
 PG_TPC_H = dbs["tpc_h"]
+PG_TPC_DS = dbs["tpc_ds"]
 
 operator_dictionary = {
     "eq": [0, 0, 1],
@@ -197,6 +198,12 @@ def is_query(parsed_statement):
     except:
         return False
 
+def clear_cache(db_string: str) -> None:
+    conn, cur = establish_connection(db_string)
+    cur.execute('SELECT clear_cache();')
+    cur.close()
+    conn.close()
+    return
 
 def build_db_min_max(db_string: str) -> dict:
     unhandled = set()
@@ -244,6 +251,15 @@ def build_label_encoders(db_string: str) -> tree:
                         "tag": ["name"],
                         "badge": ["name"],
                         "comment": ["body"]
+                    }
+                    # skipping all unneeded columns
+                    for skipped_table in skipped_string_columns:
+                        if t == skipped_table and column in skipped_string_columns[skipped_table]:
+                            skip = True
+                            break
+                if "tpch" in db_string:
+                    skipped_string_columns = {
+                        "partsupp": ["ps_comment", "ps_dummy"]
                     }
                     # skipping all unneeded columns
                     for skipped_table in skipped_string_columns:
@@ -337,6 +353,48 @@ def evaluate_hinted_query(path: str, query: str, hint_set: HintSet, connection_s
     conn.close()
     return stop - start
 
+def evaluate_and_store_qep(path: str, query_name: str, hint_set: HintSet, connection_string: str, timeout: Opt[float], run: int) -> Optional[float]:
+    """
+    Runs EXPLAIN ANALYZE on a hinted query, stores the JSON QEP, and returns the execution time.
+    """
+    with open(os.path.join(path, query_name), encoding='utf-8') as file:
+        query_text = file.read()
+
+    conn, cur = establish_connection(connection_string)
+
+    if timeout is not None:
+        if timeout <= 0.0:
+            timeout = 0.1
+        cur.execute(f"SET statement_timeout = '{int(math.ceil(timeout * 1000))}ms'")
+
+    set_hints(hint_set, cur)
+
+    try:
+        explain_query = f"EXPLAIN (ANALYZE, FORMAT JSON) {query_text}"
+        start = time.time()
+        cur.execute(explain_query)
+        stop = time.time()
+        execution_time = stop - start
+
+        plan_json = cur.fetchone()[0]  # first row, first column (JSON output)
+
+        output_dir = os.path.join(path, "FASTgres")
+        run_dir = os.path.join(output_dir, f"run{run}")
+        os.makedirs(run_dir, exist_ok=True)
+        queryId = query_name.split('.')[0]
+        plan_output_path = os.path.join(run_dir, f"{queryId}_fastgres_plan.json")
+        with open(plan_output_path, "w") as f:
+            json.dump(plan_json, f, indent=2)
+
+        return execution_time
+
+    except Exception as e:
+        print(f"Query failed: {query_name} — {str(e)}")
+        return None
+
+    finally:
+        cur.close()
+        conn.close()
 
 def evaluate_k_times(q_path: str, query: str, hint_set: HintSet, connection_string: str, timeout: int, k=5) \
         -> Opt[float]:

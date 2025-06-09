@@ -12,11 +12,20 @@ def main():
     parser = argparse.ArgumentParser(description="Precompute query objects.")
     parser.add_argument("querypath", help="<path/to/queries/>")
     parser.add_argument("-sp", "--savepath", help="<dir/to/save/to/>")
+    parser.add_argument("-fo", "--fileorder", default=None,
+                        help="Optional path to a .txt file that enforces query processing order.")    
     args = parser.parse_args()
 
     path = args.querypath
     save_dir = args.savepath
-    stack_queries = u.get_queries(path)
+    # Load queries, optionally using .txt file to enforce order
+    if args.fileorder is not None:
+        with open(args.fileorder, 'r') as f:
+            ordered_queries = [line.strip() for line in f if line.strip()]
+        available_queries = set(u.get_queries(path))
+        stack_queries = [q for q in ordered_queries if q in available_queries]
+    else:
+        stack_queries = u.get_queries(path)
 
     save_path = save_dir + "query_objects.pkl"
     save_path_time = save_dir + "query_objects_encoding_time.json"

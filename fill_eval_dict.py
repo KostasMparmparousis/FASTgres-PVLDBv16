@@ -155,6 +155,8 @@ def run():
         args_dbinfo = u.PG_STACK_OVERFLOW_REDUCED_10
     elif args_dbi == "tpch":
         args_dbinfo = u.PG_TPC_H
+    elif args_dbi == "tpcds":
+        args_dbinfo = u.PG_TPC_DS        
     else:
         raise ValueError("Unrecognized database info")
 
@@ -165,6 +167,8 @@ def run():
         args_q_path = "queries/job/"
     elif args_query_path == "tpch":
         args_q_path = "queries/tpch/"
+    elif args_query_path == "tpcds":
+        args_q_path = "queries/tpcds/"        
     else:
         raise ValueError("Query path input -qp -> {} not recognized".format(args_query_path))
 
