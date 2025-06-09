@@ -1,13 +1,3 @@
-## Setup Environment
-1. Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) if not already installed.
-2. Create and activate the environment:
-   ```bash
-   conda env create -f environment.yml
-   conda activate fastgres
-    ```
-
----
-
 # FASTgres
 
 This repository contains FASTgres, the learned model to enhance hint set prediction using context based gradient boosting. Currently, FASTgres is designed to evaluate a given workload. 
